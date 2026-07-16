@@ -1,0 +1,20 @@
+name: compliance_core
+description: >-
+  Pure-Dart passport & ID photo compliance engine for App 1. Evaluates the
+  C1-C15 compliance checks against per-country document specs. No Flutter and
+  no ML Kit imports, so it runs on desktop, in unit tests, and in the
+  calibration harness, sharing one evaluate() with the app.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  # Pixel decoding + person-mask reading for the background/lighting/sharpness
+  # checks. Chosen in the build brief and calibration harness spec.
+  image: ^4.3.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
