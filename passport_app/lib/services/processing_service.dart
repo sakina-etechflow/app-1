@@ -6,6 +6,66 @@ import 'package:image/image.dart' as img;
 import 'photo_normalizer.dart';
 import 'signal_extractor.dart';
 
+/// Stages the on-device pipeline moves through, surfaced to S4 for progress.
+enum ProcessingStage {
+  normalizing,
+  detecting,
+  formatting,
+  encoding,
+}
+
+extension ProcessingStageInfo on ProcessingStage {
+  /// User-facing label shown on the processing screen.
+  String get label {
+    switch (this) {
+      case ProcessingStage.normalizing:
+        return 'Preparing photo…';
+      case ProcessingStage.detecting:
+        return 'Detecting face…';
+      case ProcessingStage.formatting:
+        return 'Cropping and sizing…';
+      case ProcessingStage.encoding:
+        return 'Finishing…';
+    }
+  }
+
+  /// Rough completion fraction for a determinate progress bar.
+  double get fraction {
+    switch (this) {
+      case ProcessingStage.normalizing:
+        return 0.15;
+      case ProcessingStage.detecting:
+        return 0.5;
+      case ProcessingStage.formatting:
+        return 0.8;
+      case ProcessingStage.encoding:
+        return 0.95;
+    }
+  }
+}
+
+/// Cooperative cancellation token. The pipeline can't interrupt a running ML
+/// Kit call, but it checks this between stages and bails out cleanly.
+class CancelToken {
+  bool _cancelled = false;
+  bool get isCancelled => _cancelled;
+  void cancel() => _cancelled = true;
+}
+
+/// Thrown when processing is cancelled by the user via [CancelToken].
+class ProcessingCancelled implements Exception {
+  const ProcessingCancelled();
+  @override
+  String toString() => 'ProcessingCancelled';
+}
+
+/// Thrown when no face is found in the photo — drives the S4 no-face state.
+class NoFaceDetected implements Exception {
+  const NoFaceDetected();
+  @override
+  String toString() => 'NoFaceDetected';
+}
+
 /// The full output of running one photo through the on-device pipeline.
 class PipelineResult {
   PipelineResult({
@@ -32,9 +92,18 @@ class ProcessingService {
     required String rawPhotoPath,
     required cc.DocumentConfig doc,
     required bool wearsGlasses,
+    void Function(ProcessingStage stage)? onStage,
+    CancelToken? cancelToken,
   }) async {
-    final np = await PhotoNormalizer.normalize(rawPhotoPath);
+    void checkCancel() {
+      if (cancelToken?.isCancelled ?? false) throw const ProcessingCancelled();
+    }
 
+    onStage?.call(ProcessingStage.normalizing);
+    final np = await PhotoNormalizer.normalize(rawPhotoPath);
+    checkCancel();
+
+    onStage?.call(ProcessingStage.detecting);
     final extractor = SignalExtractor();
     late final ({cc.FaceSignals signals, cc.ImageData image}) ex;
     try {
@@ -42,7 +111,15 @@ class ProcessingService {
     } finally {
       await extractor.dispose();
     }
+    checkCancel();
 
+    // No face -> fail fast into the S4 no-face state rather than producing a
+    // meaningless centre-crop candidate.
+    if (ex.signals.faceCount == 0 || ex.signals.boundingBox == null) {
+      throw const NoFaceDetected();
+    }
+
+    onStage?.call(ProcessingStage.formatting);
     final report = cc.evaluate(
       ex.signals,
       ex.image,
@@ -52,9 +129,13 @@ class ProcessingService {
     );
 
     final formatted = _formatForDocument(np.image, doc, ex.signals.boundingBox);
+    checkCancel();
+
+    onStage?.call(ProcessingStage.encoding);
     final cleanJpg = Uint8List.fromList(img.encodeJpg(formatted, quality: 95));
     final previewJpg = Uint8List.fromList(
         img.encodeJpg(_watermark(img.Image.from(formatted)), quality: 92));
+    checkCancel();
 
     return PipelineResult(
       report: report,
