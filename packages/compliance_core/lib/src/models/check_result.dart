@@ -65,6 +65,29 @@ class ComplianceReport {
   List<CheckResult> get failing =>
       results.where((r) => !r.pass).toList(growable: false);
 
+  // --- Per-check status summaries (feed S5) --------------------------------
+
+  /// Total number of checks that actually ran.
+  int get total => results.length;
+
+  /// How many checks (of any severity) passed.
+  int get passedCount => results.where((r) => r.pass).length;
+
+  /// Blocking (error-severity) checks and how many passed. These drive the
+  /// overall verdict; warnings are advisory.
+  int get errorCount =>
+      results.where((r) => r.severity == Severity.error).length;
+  int get errorsPassed => results
+      .where((r) => r.severity == Severity.error && r.pass)
+      .length;
+
+  /// Advisory (warning-severity) checks and how many are currently flagged.
+  int get warningCount =>
+      results.where((r) => r.severity == Severity.warning).length;
+  int get warningsFlagged => results
+      .where((r) => r.severity == Severity.warning && !r.pass)
+      .length;
+
   /// Ids of the checks that fired, for harness comparison against
   /// `expected_failing_checks`.
   List<String> get failingCheckIds =>

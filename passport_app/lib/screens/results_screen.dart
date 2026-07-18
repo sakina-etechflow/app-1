@@ -31,7 +31,7 @@ class ResultsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
         children: [
-          _Banner(pass: pass),
+          _Banner(report: report),
           const SizedBox(height: 16),
           Card(
             child: Padding(
@@ -96,12 +96,20 @@ class ResultsScreen extends StatelessWidget {
 }
 
 class _Banner extends StatelessWidget {
-  const _Banner({required this.pass});
-  final bool pass;
+  const _Banner({required this.report});
+  final ComplianceReport report;
 
   @override
   Widget build(BuildContext context) {
+    final pass = report.pass;
     final color = pass ? AppTheme.ok : AppTheme.err;
+    // Per-check summary: blocking checks met, plus any advisory notes.
+    final summary = StringBuffer(
+        '${report.errorsPassed} of ${report.errorCount} requirements met');
+    if (report.warningsFlagged > 0) {
+      summary.write(' · ${report.warningsFlagged} guidance '
+          '${report.warningsFlagged == 1 ? 'note' : 'notes'}');
+    }
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -115,12 +123,25 @@ class _Banner extends StatelessWidget {
               color: color, size: 30),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(
-              pass
-                  ? 'All requirements met. Ready to export.'
-                  : 'Some requirements need fixing. Adjust and retake.',
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, color: color, fontSize: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  pass
+                      ? 'All requirements met. Ready to export.'
+                      : 'Some requirements need fixing. Adjust and retake.',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700, color: color, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  summary.toString(),
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: color.withValues(alpha: 0.85)),
+                ),
+              ],
             ),
           ),
         ],
