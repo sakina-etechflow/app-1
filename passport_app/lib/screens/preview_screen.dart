@@ -9,9 +9,16 @@ class PreviewScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
-    final preview = appState.formattedPreview;
     final report = appState.report;
     final blocked = report != null && !report.pass;
+
+    // S6 shows exactly what the user would export: the clean (no-watermark)
+    // render once unlocked (paid or a rewarded view), the watermarked render in
+    // the free state. This is the same image the export step writes, so the
+    // preview never over- or under-promises the output.
+    final unlocked = appState.canExportWithoutWatermark;
+    final preview =
+        unlocked ? appState.formattedClean : appState.formattedPreview;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Preview')),
@@ -45,7 +52,7 @@ class PreviewScreen extends StatelessWidget {
                         size: 18, color: Colors.black45),
                     const SizedBox(width: 6),
                     Text(
-                      appState.canExportWithoutWatermark
+                      unlocked
                           ? 'Unlocked — export without watermark.'
                           : 'Free preview includes a watermark.',
                       style: const TextStyle(color: Colors.black54),
@@ -59,7 +66,7 @@ class PreviewScreen extends StatelessWidget {
                   onPressed: blocked
                       ? null
                       : () {
-                          if (appState.canExportWithoutWatermark) {
+                          if (unlocked) {
                             Navigator.pushNamed(context, '/export');
                           } else {
                             Navigator.pushNamed(context, '/paywall');

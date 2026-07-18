@@ -62,7 +62,7 @@ class ResultsScreen extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             'Formatted to official specifications for ${doc.displayName}. '
-            'This is not a guarantee of acceptance.',
+            'Acceptance is decided by the issuing authority.',
             style: const TextStyle(fontSize: 12, color: Colors.black45),
           ),
         ],
@@ -70,21 +70,41 @@ class ResultsScreen extends StatelessWidget {
       bottomNavigationBar: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () =>
-                      Navigator.pushReplacementNamed(context, '/capture'),
-                  child: const Text('Retake'),
-                ),
+              // Two ways to fix a flagged photo. Retake starts a fresh capture;
+              // Adjust returns to the camera to reposition for the flagged
+              // checks, keeping the current selection.
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        appState.resetPhoto();
+                        Navigator.pushReplacementNamed(context, '/capture');
+                      },
+                      icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                      label: const Text('Retake'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () =>
+                          Navigator.pushReplacementNamed(context, '/capture'),
+                      icon: const Icon(Icons.tune, size: 18),
+                      label: const Text('Adjust'),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                flex: 2,
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
                 child: FilledButton(
                   onPressed: () => Navigator.pushNamed(context, '/preview'),
-                  child: Text(pass ? 'Continue' : 'See preview'),
+                  child: Text(pass ? 'Continue' : 'Continue anyway'),
                 ),
               ),
             ],

@@ -12,6 +12,10 @@ export 'src/engine.dart';
 export 'src/config/documents.dart';
 export 'src/config/thresholds.dart';
 
+// Pipeline policy (the no-alteration gate the app pipeline routes transforms
+// through; enforces spec item 4 / C15 in code, by document type).
+export 'src/pipeline/alteration_policy.dart';
+
 // Models.
 export 'src/models/geometry.dart';
 export 'src/models/face_signals.dart';

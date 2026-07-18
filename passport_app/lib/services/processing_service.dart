@@ -66,6 +66,12 @@ class NoFaceDetected implements Exception {
   String toString() => 'NoFaceDetected';
 }
 
+/// An optional subject-enhancement step (e.g. skin smoothing). The pipeline
+/// treats ANY enhancer as a subject-altering transform: it is gated by document
+/// type through [cc.AlterationPolicy] and is never run for an
+/// `alterationAllowed == false` document (all US flows, all MVP docs).
+typedef SubjectEnhancer = img.Image Function(img.Image src);
+
 /// The full output of running one photo through the on-device pipeline.
 class PipelineResult {
   PipelineResult({
@@ -87,6 +93,12 @@ class PipelineResult {
 /// documents (all MVP docs, every US flow) the ONLY transforms applied are
 /// geometric: crop, resize. No beautify, no generative fill — enforced here by
 /// document type, not just UI copy (store compliance spec item 4).
+///
+/// The enforcement is structural: every pixel transform is admitted through a
+/// [cc.AlterationPolicy] keyed on [cc.DocumentConfig.alterationAllowed], and the
+/// value reported to C15 is the policy's own record of what actually ran, never
+/// a hard-coded literal. An [enhancer] is off by default and, when supplied,
+/// throws [cc.AlterationNotPermitted] for a forbidding document before it runs.
 class ProcessingService {
   Future<PipelineResult> run({
     required String rawPhotoPath,
@@ -94,6 +106,7 @@ class ProcessingService {
     required bool wearsGlasses,
     void Function(ProcessingStage stage)? onStage,
     CancelToken? cancelToken,
+    SubjectEnhancer? enhancer,
   }) async {
     void checkCancel() {
       if (cancelToken?.isCancelled ?? false) throw const ProcessingCancelled();
@@ -120,16 +133,24 @@ class ProcessingService {
     }
 
     onStage?.call(ProcessingStage.formatting);
+
+    // The single gate every pixel transform is admitted through. For a
+    // forbidding document the enhancement branch below cannot run at all.
+    final policy = cc.AlterationPolicy(doc);
+    var formatted = _formatForDocument(np.image, doc, ex.signals.boundingBox,
+        policy);
+    formatted = _maybeEnhance(formatted, policy, enhancer);
+    checkCancel();
+
+    // C15 reads the policy's record of what actually touched the subject — not
+    // a literal — so "unaltered" cannot drift out of sync with the pipeline.
     final report = cc.evaluate(
       ex.signals,
       ex.image,
       doc,
       wearsGlasses: wearsGlasses,
-      aiOrEnhancementApplied: false, // hard-false: we never alter US docs
+      aiOrEnhancementApplied: policy.enhancementApplied,
     );
-
-    final formatted = _formatForDocument(np.image, doc, ex.signals.boundingBox);
-    checkCancel();
 
     onStage?.call(ProcessingStage.encoding);
     final cleanJpg = Uint8List.fromList(img.encodeJpg(formatted, quality: 95));
@@ -146,10 +167,28 @@ class ProcessingService {
     );
   }
 
+  /// Optional subject enhancement — the ONLY place the pipeline may alter the
+  /// subject, and it is OFF unless the caller injects an [enhancer]. Gated by
+  /// [cc.AlterationPolicy.admit]: for any `alterationAllowed == false` document
+  /// (all US flows, all MVP docs) this throws [cc.AlterationNotPermitted] before
+  /// the enhancer runs, so enhancement is structurally unavailable there
+  /// (spec item 4), not merely hidden in the UI.
+  img.Image _maybeEnhance(
+    img.Image formatted,
+    cc.AlterationPolicy policy,
+    SubjectEnhancer? enhancer,
+  ) {
+    if (enhancer == null) return formatted; // off by default
+    policy.admit(cc.TransformKind.enhancement, label: 'subject-enhancement');
+    return enhancer(formatted);
+  }
+
   /// Aspect-correct crop centred on the face, resized to a spec-compliant
-  /// output size. Purely geometric.
-  img.Image _formatForDocument(
-      img.Image src, cc.DocumentConfig doc, cc.BoundingBox? faceBox) {
+  /// output size. Purely geometric — admitted through [policy] to document and
+  /// enforce that the formatting step never alters the subject.
+  img.Image _formatForDocument(img.Image src, cc.DocumentConfig doc,
+      cc.BoundingBox? faceBox, cc.AlterationPolicy policy) {
+    policy.admit(cc.TransformKind.geometric, label: 'crop+resize');
     final aspect = doc.outputSizeMm.width / doc.outputSizeMm.height; // w/h
 
     // Largest rect of the right aspect that fits, centred on the face.
