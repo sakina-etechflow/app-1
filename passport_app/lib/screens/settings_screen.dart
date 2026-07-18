@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/ads_service.dart';
+import '../services/auth_service.dart';
 import '../services/billing_service.dart';
 import '../state/app_state.dart';
 
@@ -66,14 +67,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
             : 'No previous purchase found.')));
   }
 
+  Future<void> _showSignIn(AuthService auth) async {
+    final emailCtl = TextEditingController();
+    final passCtl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign in to sync'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Syncs your settings and check history across devices. '
+              'Your photos are never uploaded.',
+              style: TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: emailCtl,
+              keyboardType: TextInputType.emailAddress,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: 'Email'),
+            ),
+            TextField(
+              controller: passCtl,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Password'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final err = await auth.signInOrRegister(emailCtl.text, passCtl.text);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(err ?? 'Signed in — your settings now sync.')));
+  }
+
   @override
   Widget build(BuildContext context) {
     final unlocked = context.watch<AppState>().unlocked;
+    final auth = context.watch<AuthService>();
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
           const _NoteCard(),
+          _accountTile(auth),
+          const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.privacy_tip_outlined),
             title: const Text('Privacy Policy'),
@@ -104,6 +154,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : null,
     );
   }
+
+  Widget _accountTile(AuthService auth) {
+    if (!auth.cloudEnabled) {
+      return const ListTile(
+        leading: Icon(Icons.cloud_off_outlined),
+        title: Text('Cloud sync'),
+        subtitle: Text('Not configured on this build'),
+      );
+    }
+    if (auth.signedIn && !auth.isAnonymous) {
+      return ListTile(
+        leading: const Icon(Icons.cloud_done_outlined, color: Colors.green),
+        title: Text(auth.email ?? 'Signed in'),
+        subtitle: const Text('Settings & history are syncing'),
+        trailing: TextButton(
+          onPressed: () async {
+            await auth.signOut();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Signed out.')));
+            }
+          },
+          child: const Text('Sign out'),
+        ),
+      );
+    }
+    return ListTile(
+      leading: const Icon(Icons.cloud_upload_outlined),
+      title: const Text('Sign in to sync'),
+      subtitle: const Text('Sync settings & history across devices'),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => _showSignIn(auth),
+    );
+  }
 }
 
 class _NoteCard extends StatelessWidget {
@@ -121,8 +205,9 @@ class _NoteCard extends StatelessWidget {
             SizedBox(width: 12),
             Expanded(
               child: Text(
-                'All photo processing happens on this device. Your photos are '
-                'never uploaded. There is no account and no sign-in.',
+                'All photo processing happens on this device and your photos '
+                'are never uploaded. An optional account syncs only your '
+                'settings and check history — no images.',
               ),
             ),
           ],

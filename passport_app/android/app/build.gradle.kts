@@ -17,8 +17,8 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.etechflow.passport_app"
-        // ML Kit, google_mobile_ads, and in_app_purchase require API 23+.
-        minSdk = flutter.minSdkVersion
+        // ML Kit, google_mobile_ads, in_app_purchase and Firebase require API 23+.
+        minSdk = maxOf(23, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion
         multiDexEnabled = true
         versionCode = flutter.versionCode
