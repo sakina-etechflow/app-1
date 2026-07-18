@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:compliance_core/compliance_core.dart';
@@ -20,7 +21,10 @@ class CaptureScreen extends StatefulWidget {
 class _CaptureScreenState extends State<CaptureScreen> {
   CameraController? _controller;
   CameraDescription? _camera;
+  List<CameraDescription> _cameras = const [];
+  CameraLensDirection _lens = CameraLensDirection.front;
   String? _cameraError;
+  bool _permissionDenied = false;
   bool _busy = false;
 
   // Live coaching state.
@@ -29,8 +33,19 @@ class _CaptureScreenState extends State<CaptureScreen> {
   bool _autoCapture = true;
   DateTime? _readySince;
 
+  // Low-light warning state (S3): estimated from the frame luminance.
+  bool _lowLight = false;
+  DateTime _lastLum = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// How long every check must hold before auto-capture fires.
   static const _autoHold = Duration(milliseconds: 1200);
+
+  /// Luminance is sampled at most this often (independent of the coach).
+  static const _lumInterval = Duration(milliseconds: 500);
+
+  /// Average Y below this reads as too dark; hysteresis avoids flicker.
+  static const _lumEnter = 68.0; // becomes "low light" below this
+  static const _lumExit = 82.0; // clears the warning above this
 
   @override
   void initState() {
@@ -38,15 +53,21 @@ class _CaptureScreenState extends State<CaptureScreen> {
     _initCamera();
   }
 
-  Future<void> _initCamera() async {
+  Future<void> _initCamera({CameraLensDirection? prefer}) async {
     try {
-      final cameras = await availableCameras();
-      final front = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
+      if (_cameras.isEmpty) {
+        _cameras = await availableCameras();
+      }
+      if (_cameras.isEmpty) {
+        throw CameraException('noCamera', 'No cameras found on this device.');
+      }
+      final want = prefer ?? _lens;
+      final selected = _cameras.firstWhere(
+        (c) => c.lensDirection == want,
+        orElse: () => _cameras.first,
       );
       final controller = CameraController(
-        front,
+        selected,
         ResolutionPreset.high,
         enableAudio: false,
         imageFormatGroup: Platform.isAndroid
@@ -60,9 +81,28 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
       setState(() {
         _controller = controller;
-        _camera = front;
+        _camera = selected;
+        _lens = selected.lensDirection;
+        _cameraError = null;
+        _permissionDenied = false;
+        _lowLight = false;
+        _status = CoachStatus.searching;
+        _readySince = null;
       });
       await controller.startImageStream(_onFrame);
+    } on CameraException catch (e) {
+      if (!mounted) return;
+      final code = e.code.toLowerCase();
+      final denied =
+          code.contains('denied') || code.contains('permission');
+      setState(() {
+        if (denied) {
+          _permissionDenied = true;
+        } else {
+          _cameraError =
+              'Camera unavailable (${e.description ?? e.code}).\nYou can import a photo instead.';
+        }
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() => _cameraError =
@@ -74,6 +114,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final c = _controller;
     final cam = _camera;
     if (c == null || cam == null || _busy || !mounted) return;
+
+    _updateLowLight(frame);
+
     final status =
         await _coach.analyse(frame, cam, c.value.deviceOrientation);
     if (status == null || !mounted || _busy) return;
@@ -94,6 +137,39 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
   }
 
+  /// Cheap brightness estimate from the frame's luminance plane. On Android
+  /// NV21 the first width*height bytes are the Y (luma) channel; on iOS BGRA
+  /// we fall back to sampling the packed bytes, which still tracks brightness.
+  void _updateLowLight(CameraImage frame) {
+    final now = DateTime.now();
+    if (now.difference(_lastLum) < _lumInterval) return;
+    _lastLum = now;
+    if (frame.planes.isEmpty) return;
+    final bytes = frame.planes.first.bytes;
+    if (bytes.isEmpty) return;
+
+    // On Android the luma region is the first width*height bytes; elsewhere
+    // sample the whole first plane.
+    final lumaLen = Platform.isAndroid
+        ? math.min(frame.width * frame.height, bytes.length)
+        : bytes.length;
+    const samples = 2000;
+    final step = math.max(1, lumaLen ~/ samples);
+    int sum = 0, n = 0;
+    for (var i = 0; i < lumaLen; i += step) {
+      sum += bytes[i];
+      n++;
+    }
+    if (n == 0) return;
+    final avg = sum / n;
+
+    // Hysteresis so the banner doesn't flicker around the threshold.
+    final low = _lowLight ? avg < _lumExit : avg < _lumEnter;
+    if (low != _lowLight && mounted) {
+      setState(() => _lowLight = low);
+    }
+  }
+
   @override
   void dispose() {
     final c = _controller;
@@ -109,6 +185,30 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
     _coach.dispose();
     super.dispose();
+  }
+
+  bool get _canFlip =>
+      _cameras.where((c) => c.lensDirection == CameraLensDirection.front).isNotEmpty &&
+      _cameras.where((c) => c.lensDirection == CameraLensDirection.back).isNotEmpty;
+
+  Future<void> _flip() async {
+    if (_busy) return;
+    final next = _lens == CameraLensDirection.front
+        ? CameraLensDirection.back
+        : CameraLensDirection.front;
+    setState(() => _busy = true);
+    final old = _controller;
+    _controller = null;
+    if (old != null) {
+      try {
+        if (old.value.isStreamingImages) await old.stopImageStream();
+      } catch (_) {}
+      try {
+        await old.dispose();
+      } catch (_) {}
+    }
+    await _initCamera(prefer: next);
+    if (mounted) setState(() => _busy = false);
   }
 
   Future<void> _capture() async {
@@ -136,6 +236,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
     setState(() => _busy = true);
     try {
       final picker = ImagePicker();
+      // Uses the system Photo Picker (Android Photo Picker / PHPicker); no
+      // broad media permission is requested.
       final x = await picker.pickImage(source: ImageSource.gallery);
       if (x == null) {
         setState(() => _busy = false);
@@ -214,6 +316,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   ),
                 Row(
                   children: [
+                    if (_canFlip) ...[
+                      _CircleControl(
+                        icon: Icons.cameraswitch_outlined,
+                        tooltip: 'Flip camera',
+                        onPressed: _busy ? null : _flip,
+                      ),
+                      const SizedBox(width: 12),
+                    ],
                     Expanded(
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
@@ -247,6 +357,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Widget _preview() {
+    if (_permissionDenied) return _permissionDeniedView();
     if (_cameraError != null) {
       return Center(
         child: Padding(
@@ -274,6 +385,39 @@ class _CaptureScreenState extends State<CaptureScreen> {
           ),
         ),
         OvalOverlay(ready: _status.ready),
+        // Low-light warning (S3). Sits above the guidance message.
+        if (_lowLight)
+          Positioned(
+            top: 16,
+            left: 16,
+            right: 16,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xCCB26A00), // amber, semi-opaque
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.wb_incandescent_outlined,
+                      color: Colors.white, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Low light — move somewhere brighter for an even result',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         Positioned(
           left: 16,
           right: 16,
@@ -298,6 +442,92 @@ class _CaptureScreenState extends State<CaptureScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  /// Shown when the camera permission is denied at the point of use. Explains
+  /// why the camera is needed and offers a retry plus the import fallback.
+  Widget _permissionDeniedView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.no_photography_outlined,
+                color: Colors.white70, size: 48),
+            const SizedBox(height: 16),
+            const Text(
+              'Camera access is off',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'The camera is used to take your passport or ID photo. '
+              'Photos are processed on this device and never uploaded.\n\n'
+              'Allow camera access to continue, or import an existing photo '
+              'instead.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70, height: 1.4),
+            ),
+            const SizedBox(height: 22),
+            FilledButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () {
+                      setState(() => _permissionDenied = false);
+                      _initCamera();
+                    },
+              icon: const Icon(Icons.camera_alt),
+              label: const Text('Allow camera'),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: const BorderSide(color: Colors.white38),
+              ),
+              onPressed: _busy ? null : _import,
+              icon: const Icon(Icons.photo_library_outlined),
+              label: const Text('Import a photo'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A small circular icon button used for secondary capture controls (flip).
+class _CircleControl extends StatelessWidget {
+  const _CircleControl({
+    required this.icon,
+    required this.onPressed,
+    this.tooltip,
+  });
+
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 52,
+      height: 52,
+      child: OutlinedButton(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: Colors.white,
+          side: const BorderSide(color: Colors.white38),
+          shape: const CircleBorder(),
+          padding: EdgeInsets.zero,
+        ),
+        onPressed: onPressed,
+        child: Tooltip(message: tooltip ?? '', child: Icon(icon)),
+      ),
     );
   }
 }
