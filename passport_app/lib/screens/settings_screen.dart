@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart' hide AppState;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import '../legal.dart';
 import '../services/ads_service.dart';
@@ -17,10 +18,15 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   BannerAd? _banner;
   bool _bannerLoaded = false;
+  // Real build version, so the About section never drifts from the shipped
+  // binary (used for QA and store screenshots in A1-12). Falls back to the
+  // pubspec version if the platform channel is unavailable.
+  String _version = '1.0.0';
 
   @override
   void initState() {
     super.initState();
+    _loadVersion();
     // Banner only on this non-capture screen (never on capture/checking).
     _banner = BannerAd(
       adUnitId: AdsService.bannerUnit,
@@ -39,6 +45,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _banner?.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() => _version = '${info.version} (build ${info.buildNumber})');
+      }
+    } catch (e) {
+      debugPrint('Version lookup failed (non-fatal): $e');
+    }
   }
 
   Future<void> _restore() async {
@@ -103,7 +120,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final unlocked = context.watch<AppState>().unlocked;
     final auth = context.watch<AuthService>();
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: const Text('Settings & About')),
       body: ListView(
         children: [
           const _NoteCard(),
@@ -127,10 +144,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(unlocked ? 'Unlocked' : 'Not unlocked'),
             onTap: _restore,
           ),
-          const ListTile(
-            leading: Icon(Icons.info_outline),
-            title: Text('Version'),
-            subtitle: Text('1.0.0 (MVP)'),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.info_outline),
+            title: const Text('Passport & ID Photo'),
+            subtitle: Text('Compliant capture. No alteration. On-device.\n'
+                'Version $_version'),
+            isThreeLine: true,
           ),
         ],
       ),
