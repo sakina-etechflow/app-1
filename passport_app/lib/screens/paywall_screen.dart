@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../legal.dart';
 import '../services/ads_service.dart';
 import '../services/billing_service.dart';
 import '../state/app_state.dart';
@@ -86,6 +87,19 @@ class _PaywallScreenState extends State<PaywallScreen> {
           _Feature('Print sheet (4×6) and PDF'),
           _Feature('All document formats'),
           const SizedBox(height: 24),
+          // Full price shown before confirmation (acceptance criterion). The
+          // store sheet re-confirms it; this makes the amount explicit up front.
+          Center(
+            child: Text('One-time payment of $price',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(height: 4),
+          const Center(
+            child: Text('Charged once to your store account. Not a subscription.',
+                style: TextStyle(fontSize: 12, color: Colors.black54)),
+          ),
+          const SizedBox(height: 16),
           FilledButton(
             onPressed: _busy ? null : _buy,
             child: Text('Unlock everything — $price'),
@@ -108,6 +122,35 @@ class _PaywallScreenState extends State<PaywallScreen> {
               padding: EdgeInsets.only(top: 16),
               child: Center(child: CircularProgressIndicator()),
             ),
+          const SizedBox(height: 12),
+          const _LegalFooter(),
+        ],
+      ),
+    );
+  }
+}
+
+/// Terms of Service / Privacy Policy links — required on the paywall (S7) and by
+/// both stores on any purchase surface.
+class _LegalFooter extends StatelessWidget {
+  const _LegalFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          TextButton(
+            onPressed: () => openLegalUrl(context, kTermsOfServiceUrl),
+            child: const Text('Terms of Service'),
+          ),
+          const Text('·', style: TextStyle(color: Colors.black38)),
+          TextButton(
+            onPressed: () => openLegalUrl(context, kPrivacyPolicyUrl),
+            child: const Text('Privacy Policy'),
+          ),
         ],
       ),
     );

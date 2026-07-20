@@ -23,6 +23,9 @@ class AdsService {
   static String get bannerUnit => Platform.isIOS
       ? 'ca-app-pub-3940256099942544/2934735716'
       : 'ca-app-pub-3940256099942544/6300978111';
+  static String get _interstitialUnit => Platform.isIOS
+      ? 'ca-app-pub-3940256099942544/4411468910'
+      : 'ca-app-pub-3940256099942544/1033173712';
 
   Future<void> init() async {
     if (_initialized) return;
@@ -80,6 +83,44 @@ class AdsService {
         onAdLoaded: (ad) => completer.complete(ad),
         onAdFailedToLoad: (err) {
           debugPrint('Rewarded failed: $err');
+          completer.complete(null);
+        },
+      ),
+    );
+    return completer.future;
+  }
+
+  /// Show a full-screen interstitial. Per the monetisation plan this is only
+  /// shown AFTER a successful export, never mid-capture, and never to a paying
+  /// user (the caller gates on that). Fully defensive: if no ad loads it just
+  /// resolves without interrupting the user.
+  Future<void> showInterstitial() async {
+    if (!_initialized) await init();
+    InterstitialAd? ad;
+    try {
+      ad = await _loadInterstitial();
+    } catch (e) {
+      debugPrint('Interstitial load failed: $e');
+      return;
+    }
+    if (ad == null) return;
+
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdDismissedFullScreenContent: (a) => a.dispose(),
+      onAdFailedToShowFullScreenContent: (a, e) => a.dispose(),
+    );
+    await ad.show();
+  }
+
+  Future<InterstitialAd?> _loadInterstitial() {
+    final completer = Completer<InterstitialAd?>();
+    InterstitialAd.load(
+      adUnitId: _interstitialUnit,
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) => completer.complete(ad),
+        onAdFailedToLoad: (err) {
+          debugPrint('Interstitial failed: $err');
           completer.complete(null);
         },
       ),

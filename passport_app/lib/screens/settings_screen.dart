@@ -1,16 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart' hide AppState;
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
-
+import '../legal.dart';
 import '../services/ads_service.dart';
 import '../services/auth_service.dart';
 import '../services/billing_service.dart';
 import '../state/app_state.dart';
-
-/// Placeholder — must point at a live public HTTPS privacy policy before store
-/// submission (store compliance spec item 2).
-const _privacyPolicyUrl = 'https://etechflow.com/passport-photo/privacy';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -44,16 +39,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _banner?.dispose();
     super.dispose();
-  }
-
-  Future<void> _openPolicy() async {
-    final uri = Uri.parse(_privacyPolicyUrl);
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not open the policy link.')));
-      }
-    }
   }
 
   Future<void> _restore() async {
@@ -128,7 +113,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: const Icon(Icons.privacy_tip_outlined),
             title: const Text('Privacy Policy'),
             trailing: const Icon(Icons.open_in_new, size: 18),
-            onTap: _openPolicy,
+            onTap: () => openLegalUrl(context, kPrivacyPolicyUrl),
+          ),
+          ListTile(
+            leading: const Icon(Icons.description_outlined),
+            title: const Text('Terms of Service'),
+            trailing: const Icon(Icons.open_in_new, size: 18),
+            onTap: () => openLegalUrl(context, kTermsOfServiceUrl),
           ),
           ListTile(
             leading: const Icon(Icons.restore),

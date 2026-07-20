@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/ads_service.dart';
 import '../services/export_service.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
@@ -13,6 +14,9 @@ class ExportScreen extends StatelessWidget {
     final appState = context.watch<AppState>();
     final clean = appState.formattedClean;
     final doc = appState.doc;
+    // Paid users export freely with no ads. A free user reaching export did so
+    // via a rewarded view, so they see one interstitial after the export lands.
+    final purchased = appState.unlocked;
 
     // Guard: only reachable once unlocked or after a rewarded view.
     if (!appState.canExportWithoutWatermark || clean == null || doc == null) {
@@ -75,8 +79,14 @@ class ExportScreen extends StatelessWidget {
                 FilledButton.icon(
                   icon: const Icon(Icons.download),
                   label: const Text('Save / share photo'),
-                  onPressed: () =>
-                      ExportService.shareDigital(clean, doc.id),
+                  onPressed: () async {
+                    await ExportService.shareDigital(clean, doc.id);
+                    // Interstitial only after a successful export, and never for
+                    // a paying user.
+                    if (!purchased) {
+                      await AdsService.instance.showInterstitial();
+                    }
+                  },
                 ),
                 const SizedBox(height: 10),
                 OutlinedButton.icon(
