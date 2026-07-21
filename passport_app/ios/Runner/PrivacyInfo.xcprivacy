@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Privacy manifest for the app target only. Every third-party SDK ships
+	     its own manifest inside its pod/package; Xcode aggregates them into the
+	     privacy report at archive time. See docs/A11-privacy-manifest-and-labels.md
+	     for the plugin-by-plugin audit and the store-form answers that must stay
+	     consistent with this file. -->
+
+	<!-- True because AdMob may serve personalised ads to users who allow
+	     tracking through the ATT prompt (NSUserTrackingUsageDescription in
+	     Info.plist). Nothing the app itself writes is used for tracking. -->
+	<key>NSPrivacyTracking</key>
+	<true/>
+
+	<!-- AdMob ad-serving endpoints. Firebase Auth/Firestore hosts are NOT
+	     listed: they carry the user's own account data, not tracking. -->
+	<key>NSPrivacyTrackingDomains</key>
+	<array>
+		<string>googleads.g.doubleclick.net</string>
+		<string>www.googleadservices.com</string>
+		<string>pagead2.googlesyndication.com</string>
+	</array>
+
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array>
+		<!-- Only when the user upgrades the anonymous session to an email
+		     account in Settings (AuthService.signInOrRegister). -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- Firebase anonymous (or linked) uid: the key settings + history are
+		     stored under. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- Settings sync + the check-history log: document id, document name,
+		     pass/fail, timestamp. Never an image and never a file path — photos
+		     are processed on-device and are not collected. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUsageData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- IDFA / advertising identifier, read by the Google Mobile Ads SDK
+		     once the user allows tracking. Not linked to the account. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- Empty by design. The app target's own code (AppDelegate, SceneDelegate,
+	     GeneratedPluginRegistrant) and the Dart code in App.framework use no
+	     required-reason API: no file timestamps, no disk space, no boot time,
+	     no active keyboard, and UserDefaults is reached only through
+	     shared_preferences_foundation, which declares CA92.1 itself.
+	     path_provider_foundation 2.6.0 is pure-Dart FFI and only resolves
+	     directory URLs, which is not a required-reason API.
+	     If App Store Connect ever emails an ITMS-91053 notice, add the flagged
+	     API + reason code here — the doc lists the ready-made snippets. -->
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array/>
+</dict>
+</plist>

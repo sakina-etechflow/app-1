@@ -3,6 +3,11 @@
          media/storage permission: import uses the system Photo Picker. -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Declared explicitly (the Ads SDK also merges it in) so the Play Data
+         Safety answer "collects Device or other IDs" is self-evident and does
+         not silently change with a plugin bump. See
+         docs/A11-privacy-manifest-and-labels.md. -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
 
     <application
