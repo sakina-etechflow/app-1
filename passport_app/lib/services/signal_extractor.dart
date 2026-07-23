@@ -5,7 +5,6 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart'
     as mlf;
 import 'package:google_mlkit_selfie_segmentation/google_mlkit_selfie_segmentation.dart'
     as mls;
-import 'package:image/image.dart' as img;
 
 /// Bridges ML Kit (face detection + selfie segmentation) into the pure-Dart
 /// `compliance_core.FaceSignals`. The engine never sees ML Kit; it only sees
@@ -29,29 +28,30 @@ class SignalExtractor {
     await _segmenter.close();
   }
 
-  /// Run both models on [normalizedPath] and assemble [cc.FaceSignals] plus the
-  /// decoded [cc.ImageData], sharing [uprightImage] so pixel + mask coordinates
-  /// line up.
-  Future<({cc.FaceSignals signals, cc.ImageData image})> extract(
-    String normalizedPath,
-    img.Image uprightImage,
-  ) async {
+  /// Run both models on [normalizedPath] and assemble [cc.FaceSignals].
+  ///
+  /// [width]/[height] are the dimensions of the upright normalised file, so
+  /// mask and pixel coordinates line up without this class ever holding a
+  /// decoded copy of the image — the pixel stages decode it themselves, on a
+  /// worker isolate.
+  Future<cc.FaceSignals> extract(
+    String normalizedPath, {
+    required int width,
+    required int height,
+  }) async {
     final input = mlf.InputImage.fromFilePath(normalizedPath);
     final faces = await _detector.processImage(input);
     final segInput = mls.InputImage.fromFilePath(normalizedPath);
     final mask = await _segmenter.processImage(segInput);
 
-    final personMask = _toPersonMask(mask, uprightImage.width, uprightImage.height);
+    final personMask = _toPersonMask(mask, width, height);
 
     if (faces.isEmpty) {
-      return (
-        signals: cc.FaceSignals(
-          faceCount: 0,
-          imageWidth: uprightImage.width,
-          imageHeight: uprightImage.height,
-          personMask: personMask,
-        ),
-        image: cc.ImageData.fromImage(uprightImage),
+      return cc.FaceSignals(
+        faceCount: 0,
+        imageWidth: width,
+        imageHeight: height,
+        personMask: personMask,
       );
     }
 
@@ -60,10 +60,10 @@ class SignalExtractor {
         .compareTo(a.boundingBox.width * a.boundingBox.height));
     final f = faces.first;
 
-    final signals = cc.FaceSignals(
+    return cc.FaceSignals(
       faceCount: faces.length,
-      imageWidth: uprightImage.width,
-      imageHeight: uprightImage.height,
+      imageWidth: width,
+      imageHeight: height,
       boundingBox: cc.BoundingBox(
         x: f.boundingBox.left,
         y: f.boundingBox.top,
@@ -80,7 +80,6 @@ class SignalExtractor {
       smiling: f.smilingProbability,
       personMask: personMask,
     );
-    return (signals: signals, image: cc.ImageData.fromImage(uprightImage));
   }
 
   cc.PersonMask? _toPersonMask(mls.SegmentationMask? mask, int w, int h) {

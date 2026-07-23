@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:compliance_core/compliance_core.dart' as cc;
@@ -45,7 +48,8 @@ extension ProcessingStageInfo on ProcessingStage {
 }
 
 /// Cooperative cancellation token. The pipeline can't interrupt a running ML
-/// Kit call, but it checks this between stages and bails out cleanly.
+/// Kit call or a worker isolate, but it checks this between stages and bails
+/// out cleanly.
 class CancelToken {
   bool _cancelled = false;
   bool get isCancelled => _cancelled;
@@ -89,9 +93,25 @@ class PipelineResult {
   final int outputHeight;
 }
 
+/// Everything the pixel stage needs, in a form that can be copied to a worker
+/// isolate: plain data only, no closures, no plugin handles.
+class PixelStageInput {
+  const PixelStageInput({
+    required this.normalizedPath,
+    required this.signals,
+    required this.doc,
+    required this.wearsGlasses,
+  });
+
+  final String normalizedPath;
+  final cc.FaceSignals signals;
+  final cc.DocumentConfig doc;
+  final bool wearsGlasses;
+}
+
 /// On-device only. No network, no upload. For `alterationAllowed == false`
 /// documents (all MVP docs, every US flow) the ONLY transforms applied are
-/// geometric: crop, resize. No beautify, no generative fill — enforced here by
+/// geometric: crop, resize. No beautify, no generative fill — enforced by
 /// document type, not just UI copy (store compliance spec item 4).
 ///
 /// The enforcement is structural: every pixel transform is admitted through a
@@ -118,9 +138,13 @@ class ProcessingService {
 
     onStage?.call(ProcessingStage.detecting);
     final extractor = SignalExtractor();
-    late final ({cc.FaceSignals signals, cc.ImageData image}) ex;
+    final cc.FaceSignals signals;
     try {
-      ex = await extractor.extract(np.path, np.image);
+      signals = await extractor.extract(
+        np.path,
+        width: np.width,
+        height: np.height,
+      );
     } finally {
       await extractor.dispose();
     }
@@ -128,112 +152,181 @@ class ProcessingService {
 
     // No face -> fail fast into the S4 no-face state rather than producing a
     // meaningless centre-crop candidate.
-    if (ex.signals.faceCount == 0 || ex.signals.boundingBox == null) {
+    if (signals.faceCount == 0 || signals.boundingBox == null) {
       throw const NoFaceDetected();
     }
 
     onStage?.call(ProcessingStage.formatting);
-
-    // The single gate every pixel transform is admitted through. For a
-    // forbidding document the enhancement branch below cannot run at all.
-    final policy = cc.AlterationPolicy(doc);
-    var formatted = _formatForDocument(np.image, doc, ex.signals.boundingBox,
-        policy);
-    formatted = _maybeEnhance(formatted, policy, enhancer);
-    checkCancel();
-
-    // C15 reads the policy's record of what actually touched the subject — not
-    // a literal — so "unaltered" cannot drift out of sync with the pipeline.
-    final report = cc.evaluate(
-      ex.signals,
-      ex.image,
-      doc,
+    final input = PixelStageInput(
+      normalizedPath: np.path,
+      signals: signals,
+      doc: doc,
       wearsGlasses: wearsGlasses,
-      aiOrEnhancementApplied: policy.enhancementApplied,
     );
 
-    onStage?.call(ProcessingStage.encoding);
-    final cleanJpg = Uint8List.fromList(img.encodeJpg(formatted, quality: 95));
-    final previewJpg = Uint8List.fromList(
-        img.encodeJpg(_watermark(img.Image.from(formatted)), quality: 92));
+    // The pixel stage decodes the full normalised image and walks every pixel
+    // several times (background stats, shadow, sharpness), then crops, resizes
+    // and encodes twice. On 3GB-class hardware that is seconds of work; on the
+    // UI isolate it blocks the frame pump long enough to be killed as
+    // unresponsive (A1-12). Run it on a worker whenever we can.
+    //
+    // A [SubjectEnhancer] is a closure and therefore not sendable, so that path
+    // — test-only, and structurally unavailable for every MVP document — stays
+    // inline. Both branches call the SAME function, so the AlterationPolicy
+    // gate and the C15 wiring cannot diverge between them.
+    final result = enhancer == null
+        ? await Isolate.run(() => runPixelStage(input))
+        : runPixelStage(input, enhancer: enhancer);
     checkCancel();
+    onStage?.call(ProcessingStage.encoding);
 
-    return PipelineResult(
-      report: report,
-      cleanJpg: cleanJpg,
-      previewJpg: previewJpg,
-      outputWidth: formatted.width,
-      outputHeight: formatted.height,
-    );
+    return result;
   }
+}
 
-  /// Optional subject enhancement — the ONLY place the pipeline may alter the
-  /// subject, and it is OFF unless the caller injects an [enhancer]. Gated by
-  /// [cc.AlterationPolicy.admit]: for any `alterationAllowed == false` document
-  /// (all US flows, all MVP docs) this throws [cc.AlterationNotPermitted] before
-  /// the enhancer runs, so enhancement is structurally unavailable there
-  /// (spec item 4), not merely hidden in the UI.
-  img.Image _maybeEnhance(
-    img.Image formatted,
-    cc.AlterationPolicy policy,
-    SubjectEnhancer? enhancer,
-  ) {
-    if (enhancer == null) return formatted; // off by default
-    policy.admit(cc.TransformKind.enhancement, label: 'subject-enhancement');
-    return enhancer(formatted);
+/// The pure-Dart pixel stage: decode, evaluate, format, watermark, encode.
+///
+/// Top-level and free of plugins/closures (unless [enhancer] is passed) so it
+/// can run unchanged either inside [Isolate.run] or directly under test.
+PipelineResult runPixelStage(
+  PixelStageInput input, {
+  SubjectEnhancer? enhancer,
+}) {
+  final decoded = decodeOrThrow(
+    File(input.normalizedPath).readAsBytesSync(),
+    'Could not decode the normalised photo.',
+  );
+
+  // The single gate every pixel transform is admitted through. For a
+  // forbidding document the enhancement branch below cannot run at all.
+  final policy = cc.AlterationPolicy(input.doc);
+  var formatted = _formatForDocument(
+    decoded,
+    input.doc,
+    input.signals.boundingBox,
+    policy,
+  );
+  formatted = _maybeEnhance(formatted, policy, enhancer);
+
+  // C15 reads the policy's record of what actually touched the subject — not a
+  // literal — so "unaltered" cannot drift out of sync with the pipeline.
+  final report = cc.evaluate(
+    input.signals,
+    cc.ImageData.fromImage(decoded),
+    input.doc,
+    wearsGlasses: input.wearsGlasses,
+    aiOrEnhancementApplied: policy.enhancementApplied,
+  );
+
+  final cleanJpg = Uint8List.fromList(img.encodeJpg(formatted, quality: 95));
+  final previewJpg = Uint8List.fromList(
+      img.encodeJpg(_watermark(img.Image.from(formatted)), quality: 92));
+
+  return PipelineResult(
+    report: report,
+    cleanJpg: cleanJpg,
+    previewJpg: previewJpg,
+    outputWidth: formatted.width,
+    outputHeight: formatted.height,
+  );
+}
+
+/// Optional subject enhancement — the ONLY place the pipeline may alter the
+/// subject, and it is OFF unless the caller injects an [enhancer]. Gated by
+/// [cc.AlterationPolicy.admit]: for any `alterationAllowed == false` document
+/// (all US flows, all MVP docs) this throws [cc.AlterationNotPermitted] before
+/// the enhancer runs, so enhancement is structurally unavailable there
+/// (spec item 4), not merely hidden in the UI.
+img.Image _maybeEnhance(
+  img.Image formatted,
+  cc.AlterationPolicy policy,
+  SubjectEnhancer? enhancer,
+) {
+  if (enhancer == null) return formatted; // off by default
+  policy.admit(cc.TransformKind.enhancement, label: 'subject-enhancement');
+  return enhancer(formatted);
+}
+
+/// Aspect-correct crop centred on the face, resized to a spec-compliant output
+/// size. Purely geometric — admitted through [policy] to document and enforce
+/// that the formatting step never alters the subject.
+///
+/// Every dimension is clamped into range before it is used as a bound. Document
+/// specs are remotely updatable, so a bad config value must degrade to a sane
+/// crop rather than throw an ArgumentError out of `clamp` or run `copyCrop`
+/// past the edge of the source.
+img.Image _formatForDocument(
+  img.Image src,
+  cc.DocumentConfig doc,
+  cc.BoundingBox? faceBox,
+  cc.AlterationPolicy policy,
+) {
+  policy.admit(cc.TransformKind.geometric, label: 'crop+resize');
+
+  final srcW = src.width;
+  final srcH = src.height;
+  final aspect = _safeAspect(doc); // w/h
+
+  var cropH = srcH.toDouble();
+  var cropW = cropH * aspect;
+  if (cropW > srcW) {
+    cropW = srcW.toDouble();
+    cropH = cropW / aspect;
   }
+  // Rounding can push a dimension one pixel past the source; clamp before these
+  // are used to build the offset ranges below.
+  final cw = cropW.round().clamp(1, srcW);
+  final ch = cropH.round().clamp(1, srcH);
 
-  /// Aspect-correct crop centred on the face, resized to a spec-compliant
-  /// output size. Purely geometric — admitted through [policy] to document and
-  /// enforce that the formatting step never alters the subject.
-  img.Image _formatForDocument(img.Image src, cc.DocumentConfig doc,
-      cc.BoundingBox? faceBox, cc.AlterationPolicy policy) {
-    policy.admit(cc.TransformKind.geometric, label: 'crop+resize');
-    final aspect = doc.outputSizeMm.width / doc.outputSizeMm.height; // w/h
+  final cx = faceBox?.centerX ?? srcW / 2;
+  // Bias the crop slightly above the face centre to leave headroom.
+  final cy = (faceBox?.centerY ?? srcH / 2) - ch * 0.05;
+  final left = (cx - cw / 2).round().clamp(0, srcW - cw);
+  final top = (cy - ch / 2).round().clamp(0, srcH - ch);
 
-    // Largest rect of the right aspect that fits, centred on the face.
-    var cropH = src.height.toDouble();
-    var cropW = cropH * aspect;
-    if (cropW > src.width) {
-      cropW = src.width.toDouble();
-      cropH = cropW / aspect;
+  final cropped = img.copyCrop(src, x: left, y: top, width: cw, height: ch);
+
+  // Target size: 900px on the height edge, clamped to the doc's stated range.
+  final targetH = _clampToRange(
+      900, doc.minResolutionPx.height, doc.maxResolutionPx.height);
+  final targetW = _clampToRange((targetH * aspect).round(),
+      doc.minResolutionPx.width, doc.maxResolutionPx.width);
+
+  return img.copyResize(cropped,
+      width: targetW, height: targetH, interpolation: img.Interpolation.cubic);
+}
+
+/// Output aspect ratio (w/h), falling back to square if a config carries a zero
+/// or non-finite size rather than producing an infinite crop dimension.
+double _safeAspect(cc.DocumentConfig doc) {
+  final w = doc.outputSizeMm.width;
+  final h = doc.outputSizeMm.height;
+  final aspect = w / h;
+  if (!aspect.isFinite || aspect <= 0) return 1.0;
+  return aspect;
+}
+
+/// Clamp [value] into [lo]..[hi], tolerating a config where the two are
+/// inverted or non-positive.
+int _clampToRange(int value, int lo, int hi) {
+  final low = math.max(1, math.min(lo, hi));
+  final high = math.max(low, math.max(lo, hi));
+  return value.clamp(low, high);
+}
+
+/// Tiled translucent "PREVIEW" watermark for the free tier. Removed by the
+/// one-time unlock or a rewarded video.
+img.Image _watermark(img.Image image) {
+  final color = img.ColorRgba8(255, 255, 255, 140);
+  final shadow = img.ColorRgba8(0, 0, 0, 90);
+  const step = 150;
+  for (var y = 20; y < image.height; y += step) {
+    for (var x = -40; x < image.width; x += 260) {
+      img.drawString(image, 'PREVIEW',
+          font: img.arial24, x: x + 1, y: y + 1, color: shadow);
+      img.drawString(image, 'PREVIEW',
+          font: img.arial24, x: x, y: y, color: color);
     }
-    final cx = faceBox?.centerX ?? src.width / 2;
-    // Bias the crop slightly above the face centre to leave headroom.
-    final cy = (faceBox?.centerY ?? src.height / 2) - cropH * 0.05;
-    var left = (cx - cropW / 2).round();
-    var top = (cy - cropH / 2).round();
-    left = left.clamp(0, src.width - cropW.round());
-    top = top.clamp(0, src.height - cropH.round());
-
-    final cropped = img.copyCrop(src,
-        x: left, y: top, width: cropW.round(), height: cropH.round());
-
-    // Target size: 900px on the short/height edge, clamped to the doc's max.
-    var targetH = 900;
-    var targetW = (targetH * aspect).round();
-    targetW = targetW.clamp(doc.minResolutionPx.width, doc.maxResolutionPx.width);
-    targetH =
-        targetH.clamp(doc.minResolutionPx.height, doc.maxResolutionPx.height);
-
-    return img.copyResize(cropped,
-        width: targetW, height: targetH, interpolation: img.Interpolation.cubic);
   }
-
-  /// Tiled translucent "PREVIEW" watermark for the free tier. Removed by the
-  /// one-time unlock or a rewarded video.
-  img.Image _watermark(img.Image image) {
-    final color = img.ColorRgba8(255, 255, 255, 140);
-    final shadow = img.ColorRgba8(0, 0, 0, 90);
-    const step = 150;
-    for (var y = 20; y < image.height; y += step) {
-      for (var x = -40; x < image.width; x += 260) {
-        img.drawString(image, 'PREVIEW',
-            font: img.arial24, x: x + 1, y: y + 1, color: shadow);
-        img.drawString(image, 'PREVIEW',
-            font: img.arial24, x: x, y: y, color: color);
-      }
-    }
-    return image;
-  }
+  return image;
 }
