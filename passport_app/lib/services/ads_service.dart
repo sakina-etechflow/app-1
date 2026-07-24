@@ -65,13 +65,25 @@ class AdsService {
     }
     if (ad == null) return false;
 
+    // The reward callback fires asynchronously while the ad plays, and
+    // `show()` returns before the user finishes it — so we must WAIT for the ad
+    // to dismiss and only then report whether the reward was earned. Reading a
+    // flag straight after `show()` raced ahead of the callback and denied the
+    // unlock to users who watched the whole ad.
+    final completer = Completer<bool>();
     var earned = false;
     ad.fullScreenContentCallback = FullScreenContentCallback(
-      onAdDismissedFullScreenContent: (a) => a.dispose(),
-      onAdFailedToShowFullScreenContent: (a, e) => a.dispose(),
+      onAdDismissedFullScreenContent: (a) {
+        a.dispose();
+        if (!completer.isCompleted) completer.complete(earned);
+      },
+      onAdFailedToShowFullScreenContent: (a, e) {
+        a.dispose();
+        if (!completer.isCompleted) completer.complete(false);
+      },
     );
     await ad.show(onUserEarnedReward: (ad, reward) => earned = true);
-    return earned;
+    return completer.future;
   }
 
   Future<RewardedAd?> _loadRewarded() {

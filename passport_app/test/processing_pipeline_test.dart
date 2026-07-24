@@ -309,4 +309,56 @@ void main() {
       }
     });
   });
+
+  group('computeSpecCrop', () {
+    // The crop must size the head (crown→chin) to the MIDDLE of each document's
+    // head-height band, so the exported photo — not just the capture — meets
+    // spec. Under the old full-height crop the head was ~30% of the frame here,
+    // outside every band, so this guards the regression directly.
+    test('sizes the head into each document head-height band', () {
+      const srcW = 1500, srcH = 2000;
+      const crownY = 500.0, chinY = 1100.0; // 600px head
+
+      for (final doc in cc.mvpDocuments) {
+        final targetFrac =
+            (doc.headHeightMinPct + doc.headHeightMaxPct) / 2 / 100;
+        final crop = computeSpecCrop(
+          srcW: srcW,
+          srcH: srcH,
+          aspect: doc.outputSizeMm.width / doc.outputSizeMm.height,
+          crownY: crownY,
+          chinY: chinY,
+          faceCenterX: srcW / 2,
+          targetFrac: targetFrac,
+        );
+
+        // Head as a fraction of the crop height == fraction of the resized
+        // output height (the resize scales uniformly).
+        final headPct = (chinY - crownY) / crop.height * 100;
+        expect(
+          headPct,
+          inInclusiveRange(
+              doc.headHeightMinPct.toDouble(), doc.headHeightMaxPct.toDouble()),
+          reason: doc.id,
+        );
+
+        // The crop stays fully inside the source.
+        expect(crop.left, inInclusiveRange(0, srcW - crop.width), reason: doc.id);
+        expect(crop.top, inInclusiveRange(0, srcH - crop.height), reason: doc.id);
+      }
+    });
+
+    test('falls back to a full-height crop for degenerate signals', () {
+      final crop = computeSpecCrop(
+        srcW: 1000,
+        srcH: 1000,
+        aspect: 1.0,
+        crownY: 0,
+        chinY: 0, // zero head → fallback
+        faceCenterX: 500,
+        targetFrac: 0.6,
+      );
+      expect(crop.height, 1000);
+    });
+  });
 }
