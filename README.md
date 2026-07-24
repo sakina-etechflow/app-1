@@ -108,8 +108,8 @@ verification date, and tagged with a confidence level:
 - **India Passport**
 - **India OCI**
 
-> The three India-family specs are kept deliberately distinct (35×45 white vs.
-> 51×51 light-not-white), because mixing them is a top rejection cause.
+> The two India-family specs are kept deliberately distinct (Passport 35×45 white
+> vs. OCI 51×51 light-not-white), because mixing them is a top rejection cause.
 
 Adding a document = adding one `DocumentConfig` in
 `packages/compliance_core/lib/src/config/documents.dart`. No engine changes.
