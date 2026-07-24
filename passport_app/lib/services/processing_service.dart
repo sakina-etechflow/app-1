@@ -203,7 +203,7 @@ PipelineResult runPixelStage(
   var formatted = _formatForDocument(
     decoded,
     input.doc,
-    input.signals.boundingBox,
+    input.signals,
     policy,
   );
   formatted = _maybeEnhance(formatted, policy, enhancer);
@@ -247,9 +247,16 @@ img.Image _maybeEnhance(
   return enhancer(formatted);
 }
 
-/// Aspect-correct crop centred on the face, resized to a spec-compliant output
-/// size. Purely geometric — admitted through [policy] to document and enforce
-/// that the formatting step never alters the subject.
+/// Aspect-correct crop that sizes the head to the document's head-height spec,
+/// resized to a spec-compliant output size. Purely geometric — admitted through
+/// [policy] to document and enforce that the formatting step never alters the
+/// subject.
+///
+/// The crop height is chosen so the subject's head (crown→chin) fills the middle
+/// of the document's head-height band, so the EXPORTED photo — not merely the
+/// uncropped capture the verdict was measured on — meets the spec. Without this
+/// the auto-crop center-cropped to aspect and the output head size was
+/// unconstrained (QA week-3 correctness fix).
 ///
 /// Every dimension is clamped into range before it is used as a bound. Document
 /// specs are remotely updatable, so a bad config value must degrade to a sane
@@ -258,7 +265,7 @@ img.Image _maybeEnhance(
 img.Image _formatForDocument(
   img.Image src,
   cc.DocumentConfig doc,
-  cc.BoundingBox? faceBox,
+  cc.FaceSignals signals,
   cc.AlterationPolicy policy,
 ) {
   policy.admit(cc.TransformKind.geometric, label: 'crop+resize');
@@ -266,25 +273,29 @@ img.Image _formatForDocument(
   final srcW = src.width;
   final srcH = src.height;
   final aspect = _safeAspect(doc); // w/h
+  final faceBox = signals.boundingBox;
 
-  var cropH = srcH.toDouble();
-  var cropW = cropH * aspect;
-  if (cropW > srcW) {
-    cropW = srcW.toDouble();
-    cropH = cropW / aspect;
-  }
-  // Rounding can push a dimension one pixel past the source; clamp before these
-  // are used to build the offset ranges below.
-  final cw = cropW.round().clamp(1, srcW);
-  final ch = cropH.round().clamp(1, srcH);
+  // Crown = topmost person pixel (hair included) from the mask; chin = lowest
+  // contour point; both fall back to the face box when unavailable.
+  final crownY =
+      signals.personMask?.topmostPersonY()?.toDouble() ?? faceBox?.y ?? 0.0;
+  final chinY = signals.chinY ??
+      (faceBox == null ? srcH.toDouble() : faceBox.y + faceBox.height);
+  final targetFrac =
+      (doc.headHeightMinPct + doc.headHeightMaxPct) / 2 / 100;
 
-  final cx = faceBox?.centerX ?? srcW / 2;
-  // Bias the crop slightly above the face centre to leave headroom.
-  final cy = (faceBox?.centerY ?? srcH / 2) - ch * 0.05;
-  final left = (cx - cw / 2).round().clamp(0, srcW - cw);
-  final top = (cy - ch / 2).round().clamp(0, srcH - ch);
+  final crop = computeSpecCrop(
+    srcW: srcW,
+    srcH: srcH,
+    aspect: aspect,
+    crownY: crownY,
+    chinY: chinY,
+    faceCenterX: faceBox?.centerX ?? srcW / 2,
+    targetFrac: targetFrac,
+  );
 
-  final cropped = img.copyCrop(src, x: left, y: top, width: cw, height: ch);
+  final cropped = img.copyCrop(src,
+      x: crop.left, y: crop.top, width: crop.width, height: crop.height);
 
   // Target size: 900px on the height edge, clamped to the doc's stated range.
   final targetH = _clampToRange(
@@ -294,6 +305,54 @@ img.Image _formatForDocument(
 
   return img.copyResize(cropped,
       width: targetW, height: targetH, interpolation: img.Interpolation.cubic);
+}
+
+/// The crop rectangle (in source pixels) that places the head (crown→chin,
+/// [chinY] − [crownY] tall) at the middle of the document's head-height band,
+/// centred horizontally on [faceCenterX]. Because the later resize scales
+/// uniformly, the head keeps the same fraction of the OUTPUT height — so the
+/// exported photo lands in the document's head-height spec.
+///
+/// Pure and deterministic (no pixels), so the geometry is unit-tested directly.
+/// Degenerate inputs (non-positive head or fraction) fall back to a full-height
+/// crop, and every returned bound is clamped inside the source so `copyCrop`
+/// can never run past the edge.
+({int left, int top, int width, int height}) computeSpecCrop({
+  required int srcW,
+  required int srcH,
+  required double aspect,
+  required double crownY,
+  required double chinY,
+  required double faceCenterX,
+  required double targetFrac,
+}) {
+  final headPx = chinY - crownY;
+  double cropH;
+  double cropTop;
+  if (headPx.isFinite && headPx > 0 && targetFrac > 0) {
+    cropH = headPx / targetFrac;
+    // Centre the head block vertically within the crop.
+    cropTop = crownY - (cropH - headPx) / 2;
+  } else {
+    // Degenerate signals: fall back to the previous full-height crop.
+    cropH = srcH.toDouble();
+    cropTop = 0;
+  }
+
+  var cropW = cropH * aspect;
+  // If the width does not fit, constrain by width and keep the aspect (the head
+  // ends up slightly larger than target rather than the image distorting).
+  if (cropW > srcW) {
+    cropW = srcW.toDouble();
+    cropH = cropW / aspect;
+    cropTop = crownY - (cropH - headPx) / 2;
+  }
+
+  final cw = cropW.round().clamp(1, srcW);
+  final ch = cropH.round().clamp(1, srcH);
+  final left = (faceCenterX - cw / 2).round().clamp(0, srcW - cw);
+  final top = cropTop.round().clamp(0, srcH - ch);
+  return (left: left, top: top, width: cw, height: ch);
 }
 
 /// Output aspect ratio (w/h), falling back to square if a config carries a zero
